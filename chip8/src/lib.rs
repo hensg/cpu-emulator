@@ -1,17 +1,14 @@
 use rand::random;
 
 mod font;
-use font::{FONTSET, FONTSET_SIZE};
+mod memory;
+pub mod screen;
 
-const START_ADDR: u16 = 0x200;
+use memory::{Ram, Stack};
+use screen::Screen;
 
-const RAM_SIZE: usize = 4096;
 const NUM_REGS: usize = 16;
 
-pub const SCREEN_WIDTH: usize = 64;
-pub const SCREEN_HEIGHT: usize = 32;
-
-const STACK_SIZE: usize = 16;
 const NUM_KEYS: usize = 16;
 
 pub struct CPU {
@@ -19,21 +16,19 @@ pub struct CPU {
     // program is currently executing in ram memory
     program_counter: u16,
 
-    // where the game program will be loaded, read/write, entirely in memory
-    ram: [u8; RAM_SIZE],
-
-    screen: [bool; SCREEN_WIDTH * SCREEN_HEIGHT],
-
     // 16 registers (1byte), from V0 to VF
     v_registers: [u8; NUM_REGS],
 
     // indexing into ram for reads and writes
     i_register: u16,
 
-    // the stack for the subroutines
-    stack_point: u16, // index in the 'stack' as we are using raw arrays
-    stack: [u16; STACK_SIZE],
+    /// The stack for the subroutines
+    stack: Stack,
 
+    // where the game program will be loaded, read/write
+    ram: Ram,
+
+    screen: Screen,
     // the keyboard keys
     keys: [bool; NUM_KEYS],
 
@@ -44,42 +39,25 @@ pub struct CPU {
 
 impl Default for CPU {
     fn default() -> Self {
-        let mut emu = Self {
-            program_counter: START_ADDR,
-            ram: [0; RAM_SIZE],
-            screen: [false; SCREEN_WIDTH * SCREEN_HEIGHT],
+        Self {
+            program_counter: memory::START_ADDR,
             v_registers: [0; NUM_REGS],
             i_register: 0,
-            stack_point: 0,
-            stack: [0; STACK_SIZE],
+            stack: Stack::default(),
+            ram: Ram::default(),
+            screen: Screen::default(),
             keys: [false; NUM_KEYS],
             delay_timer: 0,
             sound_timer: 0,
-        };
-        emu.ram[..FONTSET_SIZE].copy_from_slice(&FONTSET);
-        emu
+        }
     }
 }
 
 impl CPU {
-    fn push(&mut self, value: u16) {
-        self.stack[self.stack_point as usize] = value;
-        self.stack_point += 1;
-    }
-
-    fn pop(&mut self) -> u16 {
-        self.stack_point -= 1;
-        self.stack[self.stack_point as usize]
-    }
-
     fn fetch(&mut self) -> u16 {
-        // ram is u8... in Chip8, each instruction is a u16 (2-bytes)
-        let higher_byte = self.ram[self.program_counter as usize] as u16;
-        let lower_byte = self.ram[(self.program_counter + 1) as usize] as u16;
-        // big endian
-        let op = (higher_byte << 8) | lower_byte;
+        let instruction = self.ram.fetch_instruction(self.program_counter as usize);
         self.program_counter += 2;
-        op
+        instruction
     }
 
     pub fn tick_timers(&mut self) {
@@ -89,12 +67,12 @@ impl CPU {
     }
 
     pub fn tick(&mut self) {
-        let op = self.fetch();
-        self.execute(op);
+        let instruction = self.fetch();
+        self.execute(instruction);
     }
 
     pub fn get_display(&self) -> &[bool] {
-        &self.screen
+        &self.screen.display
     }
 
     pub fn keypress(&mut self, idx: usize, pressed: bool) {
@@ -102,9 +80,7 @@ impl CPU {
     }
 
     pub fn load(&mut self, data: &[u8]) {
-        let start = START_ADDR as usize;
-        let end = (START_ADDR as usize) + data.len();
-        self.ram[start..end].copy_from_slice(data);
+        self.ram.load(data);
     }
 
     // 00E0 - CLS: Clear the display.
@@ -150,11 +126,12 @@ impl CPU {
         match (digit1, digit2, digit3, digit4) {
             (0, 0, 0, 0) => (),
             (0, 0, 0xE, 0) => {
-                self.screen = [false; SCREEN_WIDTH * SCREEN_HEIGHT];
+                // clear screen
+                self.screen.clear();
             }
             (0, 0, 0xE, 0xE) => {
                 // return
-                let ret_addr = self.pop();
+                let ret_addr = self.stack.pop();
                 self.program_counter = ret_addr;
             }
             (1, _, _, _) => {
@@ -165,7 +142,7 @@ impl CPU {
             (2, _, _, _) => {
                 // call nnn
                 let nnn = op & 0xFFF;
-                self.push(self.program_counter);
+                self.stack.push(self.program_counter);
                 self.program_counter = nnn;
             }
             (3, _, _, _) => {
@@ -308,7 +285,7 @@ impl CPU {
                 // Loop over each row of the sprite
                 for row in 0..n {
                     // Fetch the sprite byte from memory
-                    let sprite = self.ram[(self.i_register + row as u16) as usize];
+                    let sprite = self.ram.fetch_byte((self.i_register + row as u16) as usize);
 
                     // Loop over each bit in the sprite byte
                     for col in 0..8 {
@@ -316,17 +293,17 @@ impl CPU {
                         let bit = (sprite >> (7 - col)) & 1;
 
                         // Calculate the screen index, wrapping around screen dimensions
-                        let idx =
-                            (vx + col) % SCREEN_WIDTH + ((vy + row) % SCREEN_HEIGHT) * SCREEN_WIDTH;
+                        let idx = (vx + col) % screen::SCREEN_WIDTH
+                            + ((vy + row) % screen::SCREEN_HEIGHT) * screen::SCREEN_WIDTH;
 
                         // Get the current bit on the screen
-                        let prev_bit = self.screen[idx];
+                        let prev_bit = self.screen.display[idx];
 
                         // XOR the screen bit with the sprite bit (draw the sprite)
-                        self.screen[idx] ^= bit == 1;
+                        self.screen.display[idx] ^= bit == 1;
 
                         // Check for collision (if a bit was set and is now unset)
-                        if prev_bit && !self.screen[idx] {
+                        if prev_bit && !self.screen.display[idx] {
                             // Set the collision flag
                             self.v_registers[0xF] = 1;
                         }
@@ -403,28 +380,30 @@ impl CPU {
 
                 // store the hundreds digit of the value at memory address i
                 // the bcd representation requires splitting the value into hundreds, tens, and units
-                self.ram[self.i_register as usize] = value / 100;
+                self.ram.write_byte(self.i_register as usize, value / 100);
 
                 // store the tens digit of the value at memory address i+1
                 // this ensures the correct bcd representation is stored in consecutive memory locations
-                self.ram[(self.i_register + 1) as usize] = (value / 10) % 10;
+                self.ram
+                    .write_byte((self.i_register + 1) as usize, (value / 10) % 10);
 
                 // store the units digit of the value at memory address i+2
                 // storing the units completes the bcd representation in memory
-                self.ram[(self.i_register + 2) as usize] = value % 10;
+                self.ram
+                    .write_byte((self.i_register + 2) as usize, value % 10);
             }
             (0xF, x, 5, 5) => {
                 // store the values of registers v0 to vx in memory starting at address i
                 let i = self.i_register as usize;
                 for idx in 0..=x as usize {
-                    self.ram[i + idx] = self.v_registers[idx];
+                    self.ram.write_byte(i + idx, self.v_registers[idx]);
                 }
             }
             (0xF, x, 6, 5) => {
                 // load v0 - vx
                 let i = self.i_register as usize;
                 for idx in 0..=x as usize {
-                    self.v_registers[idx] = self.ram[i + idx];
+                    self.v_registers[idx] = self.ram.fetch_byte(i + idx);
                 }
             }
             (_, _, _, _) => unimplemented!("Unimplemented opcode: {op}"),

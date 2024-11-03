@@ -1,4 +1,7 @@
-use chip8::CPU;
+use chip8::{
+    screen::{SCREEN_HEIGHT, SCREEN_WIDTH},
+    CPU,
+};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -10,8 +13,8 @@ use std::{env, fs::File, io::Read};
 const TICKS_PER_FRAME: usize = 10;
 
 const SCALE: u32 = 15;
-const WINDOW_WIDTH: u32 = (chip8::SCREEN_WIDTH as u32) * SCALE;
-const WINDOW_HEIGHT: u32 = (chip8::SCREEN_HEIGHT as u32) * SCALE;
+const WINDOW_WIDTH: u32 = (SCREEN_WIDTH as u32) * SCALE;
+const WINDOW_HEIGHT: u32 = (SCREEN_HEIGHT as u32) * SCALE;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -94,8 +97,8 @@ fn draw_screen(emu: &CPU, canvas: &mut Canvas<Window>) {
         // draw white pixels
         if *pixel {
             // convert our 1d array's index into a 2d (x,y) position
-            let x = (i % chip8::SCREEN_WIDTH) as u32;
-            let y = (i / chip8::SCREEN_WIDTH) as u32;
+            let x = (i % chip8::screen::SCREEN_WIDTH) as u32;
+            let y = (i / chip8::screen::SCREEN_WIDTH) as u32;
 
             // draw a rectangle at (x,y), scaled up by our scale value
             let rect = Rect::new((x * SCALE) as i32, (y * SCALE) as i32, SCALE, SCALE);
