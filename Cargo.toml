@@ -1,0 +1,8 @@
+[workspace]
+members=["chip8", "desktop"]
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.metadata.crane]
+name = "chip8-desktop"
