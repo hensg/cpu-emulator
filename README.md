@@ -11,6 +11,8 @@ nix run . -- ROMs/INVADERS
 - W: fire
 - E: move right
 
+![Invaders](./invaders.gif)
+
 
 ## Acknowledgments
 Thanks to "An Introduction to Chip-8 Emulation using the Rust Programming Language" by @aquova.
